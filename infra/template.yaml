@@ -1,0 +1,287 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: E-Loop - e-waste pickup API (HTTP API, Lambda, DynamoDB, S3, SNS)
+
+Parameters:
+  Stage:
+    Type: String
+    Default: dev
+    AllowedPattern: "^[a-z0-9-]{2,12}$"
+  AllowedOrigin:
+    Type: String
+    Default: "http://localhost:5173"
+    Description: Browser origin allowed by CORS (API and image-upload bucket). Use your Amplify URL in production.
+  ClassifierChain:
+    Type: String
+    Default: "rekognition"
+    Description: Comma separated, tried in order. Options - rekognition, bedrock. Empty or unknown entries fall back to manual selection.
+  BedrockModelId:
+    Type: String
+    Default: ""
+    Description: Model or inference-profile ID for Bedrock Converse (only used when "bedrock" is in ClassifierChain).
+  CollectorSecretParameter:
+    Type: String
+    Default: /eloop/dev/collector-secret
+    Description: SSM SecureString holding the HMAC secret that collector keys are derived from.
+  AlertEmail:
+    Type: String
+    Default: ""
+    Description: Optional email subscribed to new-pickup alerts (confirm the SNS subscription email).
+
+Conditions:
+  HasAlertEmail: !Not [!Equals [!Ref AlertEmail, ""]]
+  HasBedrockModel: !Not [!Equals [!Ref BedrockModelId, ""]]
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Architectures: [arm64]
+    MemorySize: 512
+    Timeout: 15
+    Tracing: Active
+
+Resources:
+  # ---------------------------------------------------------------- data
+  Table:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: PK, AttributeType: S }
+        - { AttributeName: SK, AttributeType: S }
+        - { AttributeName: GSI1PK, AttributeType: S }
+        - { AttributeName: GSI1SK, AttributeType: S }
+      KeySchema:
+        - { AttributeName: PK, KeyType: HASH }
+        - { AttributeName: SK, KeyType: RANGE }
+      GlobalSecondaryIndexes:
+        - IndexName: GSI1
+          KeySchema:
+            - { AttributeName: GSI1PK, KeyType: HASH }
+            - { AttributeName: GSI1SK, KeyType: RANGE }
+          Projection: { ProjectionType: ALL }
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true # pickup records (which hold contact details) expire after RETENTION_DAYS
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+
+  UploadBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      OwnershipControls:
+        Rules: [{ ObjectOwnership: BucketOwnerEnforced }]
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-uploads
+            Status: Enabled
+            Prefix: uploads/
+            ExpirationInDays: 30
+            AbortIncompleteMultipartUpload: { DaysAfterInitiation: 1 }
+      CorsConfiguration:
+        CorsRules:
+          - AllowedOrigins: [!Ref AllowedOrigin]
+            AllowedMethods: [POST]
+            AllowedHeaders: ["*"]
+            MaxAge: 3000
+
+  UploadBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref UploadBucket
+      PolicyDocument:
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !GetAtt UploadBucket.Arn
+              - !Sub "${UploadBucket.Arn}/*"
+            Condition:
+              Bool: { "aws:SecureTransport": "false" }
+
+  AlertsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      KmsMasterKeyId: alias/aws/sns
+
+  AlertsEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlertEmail
+    Properties:
+      TopicArn: !Ref AlertsTopic
+      Protocol: email
+      Endpoint: !Ref AlertEmail
+
+  # ---------------------------------------------------------------- identity
+  CollectorPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub "eloop-collectors-${Stage}"
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true # collection points are onboarded by an admin, never self sign-up
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 10
+          RequireLowercase: true
+          RequireUppercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+      UsernameConfiguration:
+        CaseSensitive: false
+
+  CollectorPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref CollectorPool
+      ClientName: eloop-web
+      GenerateSecret: false # browser client, so no secret
+      ExplicitAuthFlows: [ALLOW_USER_PASSWORD_AUTH, ALLOW_REFRESH_TOKEN_AUTH]
+      PreventUserExistenceErrors: ENABLED
+      IdTokenValidity: 12
+      AccessTokenValidity: 12
+      RefreshTokenValidity: 1
+      TokenValidityUnits: { IdToken: hours, AccessToken: hours, RefreshToken: days }
+
+  # ---------------------------------------------------------------- compute
+  ApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../backend/src/ # the eloop package sits at the root of this folder, so the handler path resolves
+      Handler: eloop.handler.lambda_handler
+      Description: E-Loop HTTP API
+      Environment:
+        Variables:
+          ELOOP_MODE: aws
+          STAGE: !Ref Stage
+          TABLE_NAME: !Ref Table
+          BUCKET_NAME: !Ref UploadBucket
+          TOPIC_ARN: !Ref AlertsTopic
+          CLASSIFIER_CHAIN: !Ref ClassifierChain
+          BEDROCK_MODEL_ID: !Ref BedrockModelId
+          COLLECTOR_SECRET_PARAM: !Ref CollectorSecretParameter
+          AUTH_MODE: cognito
+          POWERTOOLS_SERVICE_NAME: eloop
+          LOG_LEVEL: INFO
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - Sid: Table
+              Effect: Allow
+              Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:Query, dynamodb:ConditionCheckItem]
+              Resource:
+                - !GetAtt Table.Arn
+                - !Sub "${Table.Arn}/index/GSI1"
+            - Sid: UploadsReadWrite # presigned POST is signed with this role; Rekognition/Bedrock read via it too
+              Effect: Allow
+              Action: [s3:PutObject, s3:GetObject]
+              Resource: !Sub "${UploadBucket.Arn}/uploads/*"
+            - Sid: Rekognition
+              Effect: Allow
+              Action: rekognition:DetectLabels
+              Resource: "*" # DetectLabels does not support resource-level permissions
+            - Sid: Alerts
+              Effect: Allow
+              Action: sns:Publish
+              Resource: !Ref AlertsTopic
+            - Sid: CollectorSecret
+              Effect: Allow
+              Action: ssm:GetParameter
+              Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${CollectorSecretParameter}"
+            - !If
+              - HasBedrockModel
+              - Sid: BedrockInvoke
+                Effect: Allow
+                Action: bedrock:InvokeModel
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:bedrock:*::foundation-model/*"
+                  - !Sub "arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:inference-profile/*"
+              - !Ref AWS::NoValue
+      Events:
+        # Explicit methods (never ANY): an ANY route also matches OPTIONS, which would send CORS preflight
+        # requests to Lambda instead of letting API Gateway answer them from CorsConfiguration.
+        Api:
+          Type: HttpApi
+          Properties: { ApiId: !Ref HttpApi, Path: "/{proxy+}", Method: GET }
+        ApiPost:
+          Type: HttpApi
+          Properties: { ApiId: !Ref HttpApi, Path: "/{proxy+}", Method: POST }
+        CollectorApi: # more specific than /{proxy+}, so API Gateway picks it and enforces the JWT first
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /collector/{proxy+}
+            Method: GET
+            Auth: { Authorizer: CognitoJwt }
+        CollectorApiPost:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /collector/{proxy+}
+            Method: POST
+            Auth: { Authorizer: CognitoJwt }
+
+  ApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${ApiFunction}"
+      RetentionInDays: 14
+
+  HttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: "$default" # a named stage would prefix every rawPath (e.g. /dev/health)
+      Auth:
+        Authorizers:
+          CognitoJwt:
+            IdentitySource: $request.header.Authorization
+            JwtConfiguration:
+              issuer: !Sub "https://cognito-idp.${AWS::Region}.amazonaws.com/${CollectorPool}"
+              audience:
+                - !Ref CollectorPoolClient
+      CorsConfiguration:
+        AllowOrigins: [!Ref AllowedOrigin]
+        AllowMethods: [GET, POST, OPTIONS]
+        AllowHeaders: [content-type, authorization]
+        MaxAge: 600
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 20
+        ThrottlingRateLimit: 10
+      AccessLogSettings:
+        DestinationArn: !GetAtt AccessLogGroup.Arn
+        Format: '{"requestId":"$context.requestId","ip":"$context.identity.sourceIp","method":"$context.httpMethod","path":"$context.path","status":"$context.status","latency":"$context.responseLatency"}'
+
+  AccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 14
+
+Outputs:
+  ApiUrl:
+    Description: Base URL for the frontend (VITE_API_BASE_URL)
+    Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}"
+  UserPoolId:
+    Description: Cognito user pool holding the collection points (usernames = collector IDs)
+    Value: !Ref CollectorPool
+  UserPoolClientId:
+    Description: Frontend VITE_COGNITO_CLIENT_ID
+    Value: !Ref CollectorPoolClient
+  TableName:
+    Value: !Ref Table
+  UploadBucketName:
+    Value: !Ref UploadBucket
+  AlertsTopicArn:
+    Value: !Ref AlertsTopic

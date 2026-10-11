@@ -1,0 +1,22 @@
+version = 0.1
+
+[default.global.parameters]
+stack_name = "eloop-dev"
+region = "ap-south-1"
+
+[default.build.parameters]
+use_container = false
+cached = true
+parallel = true
+
+[default.deploy.parameters]
+capabilities = "CAPABILITY_IAM"
+confirm_changeset = true
+resolve_s3 = true
+# Override per environment, e.g. AllowedOrigin to your Amplify domain:
+parameter_overrides = [
+  "Stage=dev",
+  "AllowedOrigin=http://localhost:5173",
+  "ClassifierChain=rekognition",
+  "CollectorSecretParameter=/eloop/dev/collector-secret",
+]

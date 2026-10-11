@@ -1,0 +1,12 @@
+[
+  { "name": "Connaught Place", "lat": 28.6315, "lng": 77.2167 },
+  { "name": "Dwarka", "lat": 28.5823, "lng": 77.05 },
+  { "name": "Janakpuri", "lat": 28.6219, "lng": 77.0878 },
+  { "name": "Karol Bagh", "lat": 28.6519, "lng": 77.1909 },
+  { "name": "Lajpat Nagar", "lat": 28.5677, "lng": 77.2433 },
+  { "name": "Rohini", "lat": 28.7383, "lng": 77.0822 },
+  { "name": "Saket", "lat": 28.5245, "lng": 77.2066 },
+  { "name": "Shahbad Daulatpur (DTU)", "lat": 28.75, "lng": 77.1175 },
+  { "name": "Noida Sector 62", "lat": 28.627, "lng": 77.3649 },
+  { "name": "Gurugram Sector 29", "lat": 28.4595, "lng": 77.0266 }
+]

@@ -1,0 +1,47 @@
+[
+  {
+    "id": "demo-dwarka",
+    "name": "Demo Collection Point, Dwarka",
+    "area": "Dwarka",
+    "lat": 28.5823,
+    "lng": 77.05,
+    "accepts": ["*"],
+    "demo": true
+  },
+  {
+    "id": "demo-rohini",
+    "name": "Demo Collection Point, Rohini",
+    "area": "Rohini",
+    "lat": 28.7383,
+    "lng": 77.0822,
+    "accepts": ["smartphone", "laptop", "tablet", "tv_monitor", "charger_cable", "keyboard_mouse", "router_modem", "headphones"],
+    "demo": true
+  },
+  {
+    "id": "demo-saket",
+    "name": "Demo Collection Point, Saket",
+    "area": "Saket",
+    "lat": 28.5245,
+    "lng": 77.2066,
+    "accepts": ["*"],
+    "demo": true
+  },
+  {
+    "id": "demo-noida",
+    "name": "Demo Collection Point, Noida Sector 62",
+    "area": "Noida Sector 62",
+    "lat": 28.627,
+    "lng": 77.3649,
+    "accepts": ["smartphone", "laptop", "tablet", "battery_pack", "charger_cable", "circuit_board", "headphones"],
+    "demo": true
+  },
+  {
+    "id": "demo-gurugram",
+    "name": "Demo Collection Point, Gurugram Sector 29",
+    "area": "Gurugram Sector 29",
+    "lat": 28.4595,
+    "lng": 77.0266,
+    "accepts": ["*"],
+    "demo": true
+  }
+]

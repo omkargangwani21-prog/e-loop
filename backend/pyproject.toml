@@ -1,0 +1,20 @@
+[project]
+name = "eloop-api"
+version = "0.1.0"
+description = "E-Loop API: e-waste pickup, classification and traceable collection ledger"
+requires-python = ">=3.12"
+dependencies = ["pydantic>=2.8,<3"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
+ignore = ["RUF012"]
